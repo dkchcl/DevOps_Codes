@@ -1,0 +1,16 @@
+resource_group_name   = "dkc-rg-03"
+location              = "west us"
+vnet_name             = "vnet-01"
+vnet_address_space    = ["10.0.0.0/16"]
+subnet_name           = "subnet01"
+subnet_address_prefix = ["10.0.1.0/24"]
+nsg_name              = "nsg01"
+public_ip_name        = "pip01"
+nic_name              = "nic01"
+vm_name               = "dkcvm53355"
+vm_size               = "Standard_B1s"
+admin_username        = "adminuser"
+admin_password        = "P@ssword1234!"
+image_publisher       = "Canonical"
+image_offer           = "0001-com-ubuntu-server-focal"
+image_sku             = "20_04-lts"
