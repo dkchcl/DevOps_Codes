@@ -3,7 +3,7 @@
 #############################################
 
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.11.0"
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
@@ -50,33 +50,73 @@ resource "random_string" "sa" {
   special = false
 }
 
+# Virtual Network
+resource "azurerm_virtual_network" "vnet" {
+  name                = "vnet-sa"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+# Subnet for Private Endpoint
+resource "azurerm_subnet" "subnet" {
+  name                              = "snet-sa-private"
+  resource_group_name               = azurerm_resource_group.rg.name
+  virtual_network_name              = azurerm_virtual_network.vnet.name
+  address_prefixes                  = ["10.0.1.0/24"]
+  private_endpoint_network_policies = "Disabled"
+}
+
+# Network Security Group
+resource "azurerm_network_security_group" "nsg" {
+  name                = "sa-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+# NSG association with Subnet
+resource "azurerm_subnet_network_security_group_association" "assoc" {
+  subnet_id                 = azurerm_subnet.subnet.id
+  network_security_group_id = azurerm_network_security_group.nsg.id
+}
+
+# Private DNS Zone
+resource "azurerm_private_dns_zone" "dns" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+# Link VNet to Private DNS
+resource "azurerm_private_dns_zone_virtual_network_link" "dnslink" {
+  name                  = "link-vnet"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.dns.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+  registration_enabled  = false
+
+  depends_on = [
+    azurerm_virtual_network.vnet,
+    azurerm_private_dns_zone.dns
+  ]
+}
+
 # Secure Storage Account
 resource "azurerm_storage_account" "sa" {
-  name                              = "st${random_string.sa.result}"
-  resource_group_name               = azurerm_resource_group.rg.name
-  location                          = azurerm_resource_group.rg.location
-  account_tier                      = "Standard"
-  account_replication_type          = "GRS"
-  account_kind                      = "StorageV2"
-  min_tls_version                   = "TLS1_2"
-  https_traffic_only_enabled        = true
+  name                       = "st${random_string.sa.result}"
+  resource_group_name        = azurerm_resource_group.rg.name
+  location                   = azurerm_resource_group.rg.location
+  account_tier               = "Standard"
+  account_replication_type   = "GRS"
+  account_kind               = "StorageV2"
+  min_tls_version            = "TLS1_2"
+  https_traffic_only_enabled = true
   # allow_blob_public_access          = false
   infrastructure_encryption_enabled = true
   cross_tenant_replication_enabled  = false
-  shared_access_key_enabled         = false
+  shared_access_key_enabled         = true                                     # should be false for security
   public_network_access_enabled     = false
-  allow_nested_items_to_be_public = false
+  allow_nested_items_to_be_public   = false
 
-  queue_properties {
-    logging {
-      delete                = true
-      read                  = true
-      write                 = true
-      version               = "1.0"
-      retention_policy_days = 10
-    }
-  }
-  
   identity {
     type = "SystemAssigned"
   }
@@ -84,6 +124,10 @@ resource "azurerm_storage_account" "sa" {
   network_rules {
     default_action = "Deny"
     bypass         = ["AzureServices"]
+  }
+
+  sas_policy {
+    expiration_period = "01.12:00:00"
   }
 
   blob_properties {
@@ -95,29 +139,76 @@ resource "azurerm_storage_account" "sa" {
       days = 7
     }
   }
-
 }
 
+# Storage Account Queue Properties
+resource "azurerm_storage_account_queue_properties" "sa_queue_props" {
+  storage_account_id = azurerm_storage_account.sa.id
+
+  logging {
+    delete                = true
+    read                  = true
+    write                 = true
+    version               = "1.0"
+    retention_policy_days = 7
+  }
+  # hour_metrics {
+  #   enabled               = true
+  #   include_apis          = true
+  #   version               = "1.0"
+  #   retention_policy_days = 10
+  # }
+  # minute_metrics {
+  #   enabled               = true
+  #   include_apis          = true
+  #   version               = "1.0"
+  #   retention_policy_days = 10
+  # }
+
+  depends_on = [azurerm_storage_account.sa]
+}
+
+# Client Configuration for Key Vault Access
 data "azurerm_client_config" "current" {}
 
+# Key Vault
 resource "azurerm_key_vault" "kv" {
-  name                = "dkckv"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  sku_name            = "standard"
-  soft_delete_retention_days  = 7
-  purge_protection_enabled = true
+  name                       = "dkckv"
+  location                   = azurerm_resource_group.rg.location
+  resource_group_name        = azurerm_resource_group.rg.name
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  soft_delete_retention_days = 7
+  purge_protection_enabled   = true
 
   public_network_access_enabled = false
 
   network_acls {
-    ip_rules = ["10.0.1.0/28"]
+    # ip_rules       = ["10.0.1.0/24"]
     default_action = "Deny"
-    bypass = "AzureServices"
+    bypass         = "AzureServices"
   }
 }
 
+resource "azurerm_private_dns_zone" "kv_dns" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "kv_dns_link" {
+  name                  = "link-kv-vnet"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.kv_dns.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+  registration_enabled  = false
+
+  depends_on = [
+    azurerm_virtual_network.vnet,
+    azurerm_private_dns_zone.kv_dns
+  ]
+}
+
+# Access Policy for Key Vault
 resource "azurerm_key_vault_access_policy" "client" {
   key_vault_id = azurerm_key_vault.kv.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
@@ -127,53 +218,33 @@ resource "azurerm_key_vault_access_policy" "client" {
   secret_permissions = ["Get"]
 }
 
+# Key Vault Key for Customer Managed Key
 resource "azurerm_key_vault_key" "kvk" {
-  name         = "tfex-key"
-  key_vault_id = azurerm_key_vault.kv.id
-  key_type     = "RSA-HSM"
-  key_size     = 2048
-  key_opts     = ["decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"]
-  expiration_date = "2020-12-30T20:00:00Z"
+  name            = "tfex-key"
+  key_vault_id    = azurerm_key_vault.kv.id
+  key_type        = "RSA-HSM"
+  key_size        = 2048
+  key_opts        = ["decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"]
+  expiration_date = "2030-12-30T20:00:00Z"
 
   depends_on = [
     azurerm_key_vault_access_policy.client
   ]
 }
 
-
+# Customer Managed Key for Storage Account
 resource "azurerm_storage_account_customer_managed_key" "cmk" {
   storage_account_id = azurerm_storage_account.sa.id
   key_vault_id       = azurerm_key_vault.kv.id
   key_name           = azurerm_key_vault_key.kvk.name
+
+  depends_on = [
+    azurerm_key_vault_key.kvk,
+    azurerm_key_vault_access_policy.client,
+    azurerm_storage_account.sa
+  ]
 }
 
-# Virtual Network
-resource "azurerm_virtual_network" "vnet" {
-  name                = "vnet-sa"
-  address_space       = ["10.0.0.0/16"]
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-}
-
-# Subnet for Private Endpoint
-resource "azurerm_subnet" "subnet" {
-  name                                          = "snet-sa-private"
-  resource_group_name                           = azurerm_resource_group.rg.name
-  virtual_network_name                          = azurerm_virtual_network.vnet.name
-  address_prefixes                              = ["10.0.1.0/24"]
-  # private_endpoint_network_policies_enabled     = false
-}
-
-resource "azurerm_network_security_group" "nsg" {
-  name                = "sa-nsg"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-}
-
-resource "azurerm_subnet_network_security_group_association" "assoc" {
-  subnet_id                 = azurerm_subnet.subnet.id
-  network_security_group_id = azurerm_network_security_group.nsg.id
-}
 
 # Private Endpoint for Blob
 resource "azurerm_private_endpoint" "pe" {
@@ -194,23 +265,14 @@ resource "azurerm_private_endpoint" "pe" {
     private_dns_zone_ids = [azurerm_private_dns_zone.dns.id]
   }
 
+  depends_on = [
+    azurerm_storage_account.sa,
+    azurerm_private_dns_zone.dns,
+    azurerm_private_dns_zone_virtual_network_link.dnslink
+  ]
 }
 
-# Private DNS Zone
-resource "azurerm_private_dns_zone" "dns" {
-  name                = "privatelink.blob.core.windows.net"
-  resource_group_name = azurerm_resource_group.rg.name
-}
-
-# Link VNet to Private DNS
-resource "azurerm_private_dns_zone_virtual_network_link" "dnslink" {
-  name                  = "link-vnet"
-  resource_group_name   = azurerm_resource_group.rg.name
-  private_dns_zone_name = azurerm_private_dns_zone.dns.name
-  virtual_network_id    = azurerm_virtual_network.vnet.id
-  registration_enabled  = false
-}
-
+# Private Endpoint for Key Vault
 resource "azurerm_private_endpoint" "kv-pe" {
   name                = "sa-private-endpoint"
   location            = azurerm_resource_group.rg.location
@@ -223,6 +285,18 @@ resource "azurerm_private_endpoint" "kv-pe" {
     private_connection_resource_id = azurerm_key_vault.kv.id
     subresource_names              = ["vault"]
   }
+
+  private_dns_zone_group {
+    name                 = "kv-dns-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.kv_dns.id]
+  }
+
+  depends_on = [
+    azurerm_key_vault.kv,
+    azurerm_subnet.subnet,
+    azurerm_private_dns_zone.kv_dns,
+    azurerm_private_dns_zone_virtual_network_link.kv_dns_link
+  ]
 }
 
 # Outputs
