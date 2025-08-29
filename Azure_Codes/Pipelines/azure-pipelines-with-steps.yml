@@ -1,0 +1,55 @@
+trigger:
+- master
+
+pool: todoagent
+
+variables:
+  workdirectory: '$(System.DefaultWorkingDirectory)/Infra/Dev'
+
+steps:
+- task: TerraformInstaller@1
+  displayName: Terraform Install
+  inputs:
+    terraformVersion: 'latest'
+
+- task: TerraformTask@5
+  displayName: Terraform init
+  inputs:
+    provider: 'azurerm'
+    command: 'init'
+    workingDirectory: $(workdirectory)
+    backendServiceArm: 'newsc'
+    backendAzureRmStorageAccountName: 'dkcstorageaccount'
+    backendAzureRmContainerName: 'dkccontainer'
+    backendAzureRmKey: 'aks.tfstate'
+
+- task: TerraformTask@5
+  displayName: Terraform validate
+  inputs:
+    provider: 'azurerm'
+    command: 'validate'
+    workingDirectory: $(workdirectory)
+
+- task: TerraformTask@5
+  displayName: Terraform plan
+  inputs:
+    provider: 'azurerm'
+    command: 'plan'
+    workingDirectory: $(workdirectory)
+    environmentServiceNameAzureRM: 'newsc'
+
+- task: TerraformTask@5
+  displayName: Terraform apply
+  inputs:
+    provider: 'azurerm'
+    command: 'apply'
+    workingDirectory: $(workdirectory)
+    environmentServiceNameAzureRM: 'newsc'
+
+- task: TerraformTask@5
+  displayName: Terraform Destroy
+  inputs:
+    provider: 'azurerm'
+    command: 'destroy'
+    workingDirectory: $(workdirectory)
+    environmentServiceNameAzureRM: 'newsc'
